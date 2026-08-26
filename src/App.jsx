@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import * as XLSX from 'xlsx';
-import { Upload, TrendingUp, Calculator, FileSpreadsheet, LineChart } from 'lucide-react';
+import { Upload, TrendingUp, Calculator, FileSpreadsheet, LineChart, Package } from 'lucide-react';
 import {
   calcDasHoje,
   calcDasPorDentroRate,
@@ -10,6 +10,11 @@ import {
   fmtR,
 } from './simplesEngine';
 import produtosBaseUrl from './assets/produtos-base.xlsx?url';
+import { supabaseConfigurado } from './supabaseClient';
+import {
+  gerarId, custoTotal, salvarSnapshotLocal, carregarOuSemear,
+  criarProduto, excluirProduto, atualizarCustoBase, criarCustoExtra, excluirCustoExtra, substituirTodosProdutos,
+} from './produtosStore';
 
 const ANOS_REFORMA = Object.keys(REFORM_SCHEDULE);
 
@@ -63,7 +68,7 @@ function parseProdutos(arrayBuffer) {
     const venda = parseFloat(r[vendaCol]);
     const custo = parseFloat(r[custoCol]);
     if (!Number.isFinite(venda) || !Number.isFinite(custo) || venda <= 0) continue;
-    out.push({ sku: String(r[skuCol]), venda, custo });
+    out.push({ id: gerarId(), sku: String(r[skuCol]), venda, custo, custosExtras: [] });
   }
   return out;
 }
@@ -193,7 +198,7 @@ function RepasseTab({ rbt12Raw, produtos, aliquotaUsadaRaw, setAliquotaUsadaRaw,
   const produtosValidos = useMemo(() => produtos.filter((p) => p.venda > 0), [produtos]);
   const margemAlvoMedia = useMemo(() => {
     if (!produtosValidos.length) return 0;
-    const soma = produtosValidos.reduce((acc, p) => acc + (1 - p.custo / p.venda - aliquotaUsada), 0);
+    const soma = produtosValidos.reduce((acc, p) => acc + (1 - custoTotal(p) / p.venda - aliquotaUsada), 0);
     return soma / produtosValidos.length;
   }, [produtosValidos, aliquotaUsada]);
 
@@ -207,11 +212,12 @@ function RepasseTab({ rbt12Raw, produtos, aliquotaUsadaRaw, setAliquotaUsadaRaw,
   const aliquotaSelecionada = aliquotaUsada + gap * (mesSelecionado / meses);
 
   const linhasMes = useMemo(() => produtosValidos.map((p) => {
-    const margemAlvo = 1 - p.custo / p.venda - aliquotaUsada;
+    const custo = custoTotal(p);
+    const margemAlvo = 1 - custo / p.venda - aliquotaUsada;
     const denom = 1 - margemAlvo - aliquotaSelecionada;
-    const precoSugerido = denom > 0 ? p.custo / denom : null;
-    const margemSemRepasse = 1 - p.custo / p.venda - aliquotaSelecionada;
-    return { ...p, margemAlvo, precoSugerido, margemSemRepasse };
+    const precoSugerido = denom > 0 ? custo / denom : null;
+    const margemSemRepasse = 1 - custo / p.venda - aliquotaSelecionada;
+    return { ...p, custo, margemAlvo, precoSugerido, margemSemRepasse };
   }), [produtosValidos, aliquotaUsada, aliquotaSelecionada]);
 
   const temDados = !!aliquotaUsadaRaw && rbt12 > 0;
@@ -423,7 +429,16 @@ function CbsIbsTab({
       {rbt12 > 0 && regime === 'dentro' && dentro && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
           <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">DAS reconstituído — {dentro.faixa && `${dentro.faixaIndex + 1}ª faixa`}</h4>
-          <div className="flex items-baseline gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-4 mb-4">
+            {dentro.detalhe.map((d) => (
+              <div key={d.nome}>
+                <p className="text-xs text-slate-500">{d.nome}</p>
+                <p className="text-lg font-black text-slate-800">{fmtPct(d.rate, 4)}</p>
+                <p className="text-[11px] text-slate-400">{fmtR(valorVenda * d.rate)}</p>
+              </div>
+            ))}
+          </div>
+          <div className="border-t border-slate-100 pt-3 flex items-baseline gap-3">
             <span className="text-3xl font-black text-[#2F6F4E]">{fmtPct(dentro.aliqEf, 4)}</span>
             <span className="text-sm text-slate-400">alíquota efetiva total (CBS + IBS embutidos)</span>
           </div>
@@ -434,26 +449,42 @@ function CbsIbsTab({
       {rbt12 > 0 && regime === 'fora' && fora && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
           <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Composição — {fora.faixa && `${fora.faixaIndex + 1}ª faixa`}</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-            <div>
-              <p className="text-xs text-slate-500">DAS residual</p>
-              <p className="text-xl font-black text-slate-800">{fmtPct(fora.rateResidual, 4)}</p>
-              <p className="text-[11px] text-slate-400">{fmtR(valorVenda * fora.rateResidual)}</p>
-            </div>
+          <p className="text-[10px] font-semibold text-slate-400 uppercase mb-2">Continuam no DAS residual</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-3">
+            {fora.detalhe.map((d) => (
+              <div key={d.nome}>
+                <p className="text-xs text-slate-500">{d.nome}</p>
+                <p className="text-lg font-black text-slate-800">{fmtPct(d.rate, 4)}</p>
+                <p className="text-[11px] text-slate-400">{fmtR(valorVenda * d.rate)}</p>
+              </div>
+            ))}
+          </div>
+          <p className="text-sm text-slate-600 mb-4">
+            <span className="font-black text-slate-800">{fmtPct(fora.rateResidual, 4)}</span>
+            <span className="text-slate-400"> — alíquota efetiva do DAS residual (guia do DAS) · {fmtR(valorVenda * fora.rateResidual)}</span>
+          </p>
+
+          <p className="text-[10px] font-semibold text-slate-400 uppercase mb-2">Saem por fora, regime regular</p>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-3">
             <div>
               <p className="text-xs text-slate-500">CBS ({(cbsPct || sched.cbs).toFixed(1)}%)</p>
-              <p className="text-xl font-black text-slate-800">{fmtPct(fora.cbsRate)}</p>
+              <p className="text-lg font-black text-amber-700">{fmtPct(fora.cbsRate)}</p>
               <p className="text-[11px] text-slate-400">{fmtR(valorVenda * fora.cbsRate)}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500">IBS ({sched.ibs.toFixed(1)}%)</p>
-              <p className="text-xl font-black text-slate-800">{fmtPct(fora.ibsRate)}</p>
+              <p className="text-lg font-black text-amber-700">{fmtPct(fora.ibsRate)}</p>
               <p className="text-[11px] text-slate-400">{fmtR(valorVenda * fora.ibsRate)}</p>
             </div>
           </div>
+          <p className="text-sm text-slate-600 mb-4">
+            <span className="font-black text-amber-700">{fmtPct(fora.cbsRate + fora.ibsRate, 4)}</span>
+            <span className="text-slate-400"> — alíquota efetiva de CBS + IBS (fora da guia do DAS) · {fmtR(valorVenda * (fora.cbsRate + fora.ibsRate))}</span>
+          </p>
+
           <div className="border-t border-slate-100 pt-3 flex items-baseline gap-3">
             <span className="text-2xl font-black text-[#2F6F4E]">{fmtPct(fora.totalRate, 4)}</span>
-            <span className="text-sm text-slate-400">carga total sobre a venda (sem créditos)</span>
+            <span className="text-sm text-slate-400">carga total sobre a venda — DAS residual + CBS + IBS (sem créditos)</span>
           </div>
         </div>
       )}
@@ -504,40 +535,93 @@ function AumentoCell({ c }) {
   );
 }
 
-function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdutos }) {
-  const fileInputRef = useRef(null);
-  const rbt12 = parseBR(rbt12Raw);
-  const cbsPct = parseBR(cbsPctRaw);
+// ─── Aba: Produtos (cadastro + custos, em cards) ───────────────────────────
+function ProdutoModal({ produto, onClose, onAtualizarCustoBase, onAdicionarCustoExtra, onRemoverCustoExtra }) {
+  const [novoCustoNome, setNovoCustoNome] = useState('');
+  const [novoCustoValor, setNovoCustoValor] = useState('');
 
+  const handleAdicionar = () => {
+    onAdicionarCustoExtra(produto.id, novoCustoNome, novoCustoValor);
+    setNovoCustoNome('');
+    setNovoCustoValor('');
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg p-6" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-4">
+          <div>
+            <p className="font-mono text-sm font-bold text-slate-800">{produto.sku}</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">Preço de venda: {fmtR(produto.venda)}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600 text-lg leading-none">✕</button>
+        </div>
+
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Preço de compra (base)</span>
+          <input
+            type="text" inputMode="decimal" defaultValue={String(produto.custoBase).replace('.', ',')}
+            onBlur={(e) => onAtualizarCustoBase(produto.id, e.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#2F6F4E] focus:ring-1 focus:ring-[#2F6F4E] outline-none"
+          />
+        </label>
+
+        {produto.custosExtras?.length > 0 && (
+          <div className="mt-4">
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Custos extras</p>
+            <div className="space-y-1.5">
+              {produto.custosExtras.map((c) => (
+                <div key={c.id} className="flex items-center justify-between bg-slate-50 rounded-lg border border-slate-200 px-3 py-1.5 text-sm">
+                  <span className="text-slate-600">{c.nome}</span>
+                  <div className="flex items-center gap-3">
+                    <span className="font-semibold text-slate-700">{fmtR(c.valor)}</span>
+                    <button onClick={() => onRemoverCustoExtra(produto.id, c.id)} className="text-xs text-slate-300 hover:text-red-500">remover</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-wrap items-end gap-3">
+          <label className="block flex-1 min-w-[140px]">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Novo custo</span>
+            <input
+              type="text" value={novoCustoNome} onChange={(e) => setNovoCustoNome(e.target.value)} placeholder="Ex: Frete, embalagem, taxa..."
+              className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#2F6F4E] focus:ring-1 focus:ring-[#2F6F4E] outline-none"
+            />
+          </label>
+          <div className="w-28">
+            <CurrencyInput label="Valor (R$)" value={novoCustoValor} onChange={setNovoCustoValor} placeholder="Ex: 3,50" />
+          </div>
+          <button onClick={handleAdicionar} className="h-[38px] text-sm font-semibold bg-[#2F6F4E] text-white px-4 rounded-lg hover:bg-[#265c40] transition">
+            Adicionar
+          </button>
+        </div>
+
+        <div className="mt-5 border-t border-slate-100 pt-4 flex items-baseline justify-between">
+          <span className="text-xs font-semibold text-slate-500 uppercase">Custo total</span>
+          <span className="text-xl font-black text-[#2F6F4E]">{fmtR(custoTotal({ custo: produto.custoBase, custosExtras: produto.custosExtras }))}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProdutosTab({ produtos, setProdutos }) {
+  const fileInputRef = useRef(null);
   const [novoSku, setNovoSku] = useState('');
   const [novoCusto, setNovoCusto] = useState('');
   const [novoVenda, setNovoVenda] = useState('');
-
-  const hoje = useMemo(() => (rbt12 > 0 ? calcDasHoje(rbt12) : null), [rbt12]);
-  const dentroInfo = useMemo(() => (rbt12 > 0 ? calcDasPorDentroRate(rbt12, ano) : null), [rbt12, ano]);
-  const foraInfo = useMemo(() => (rbt12 > 0 ? calcDasPorForaRate(rbt12, ano, cbsPct) : null), [rbt12, ano, cbsPct]);
-
-  const linhas = useMemo(() => {
-    if (!hoje || !dentroInfo || !foraInfo) return [];
-    return produtos.map((p) => {
-      const dasHoje = p.venda * hoje.aliqEf;
-      const lucroHoje = p.venda - p.custo - dasHoje;
-      const margemHoje = p.venda > 0 ? lucroHoje / p.venda : 0;
-      return {
-        ...p,
-        margemHoje,
-        dentro: cenario(p.venda, p.custo, margemHoje, dentroInfo.aliqEf),
-        fora: cenario(p.venda, p.custo, margemHoje, foraInfo.totalRate),
-      };
-    });
-  }, [produtos, hoje, dentroInfo, foraInfo]);
+  const [abertoId, setAbertoId] = useState(null);
 
   const handleFile = useCallback((file) => {
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       try {
         const parsed = parseProdutos(e.target.result);
-        setProdutos(parsed);
+        const salvos = await substituirTodosProdutos(parsed);
+        setProdutos(salvos);
       } catch (err) {
         alert('Não foi possível ler essa planilha: ' + err.message);
       }
@@ -545,31 +629,51 @@ function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdut
     reader.readAsArrayBuffer(file);
   }, [setProdutos]);
 
-  const adicionarProduto = useCallback(() => {
+  const adicionarProduto = useCallback(async () => {
     const custo = parseBR(novoCusto);
     const venda = parseBR(novoVenda);
     if (!novoSku.trim() || venda <= 0) return;
-    setProdutos((prev) => [...prev, { sku: novoSku.trim(), custo, venda }]);
+    const novo = await criarProduto({ sku: novoSku.trim(), custo, venda });
+    setProdutos((prev) => [...prev, novo]);
     setNovoSku('');
     setNovoCusto('');
     setNovoVenda('');
   }, [novoSku, novoCusto, novoVenda, setProdutos]);
 
-  const removerProduto = useCallback((idx) => {
-    setProdutos((prev) => prev.filter((_, i) => i !== idx));
+  const removerProduto = useCallback((id) => {
+    setProdutos((prev) => prev.filter((p) => p.id !== id));
+    excluirProduto(id);
   }, [setProdutos]);
+
+  const handleAtualizarCustoBase = useCallback((id, valor) => {
+    const custo = parseBR(valor);
+    setProdutos((prev) => prev.map((p) => (p.id === id ? { ...p, custo } : p)));
+    atualizarCustoBase(id, custo);
+  }, [setProdutos]);
+
+  const handleAdicionarCustoExtra = useCallback(async (id, nome, valorRaw) => {
+    const valor = parseBR(valorRaw);
+    if (!nome.trim() || valor <= 0) return;
+    const novo = await criarCustoExtra(id, nome.trim(), valor);
+    setProdutos((prev) => prev.map((p) => (
+      p.id === id ? { ...p, custosExtras: [...(p.custosExtras || []), novo] } : p
+    )));
+  }, [setProdutos]);
+
+  const removerCustoExtra = useCallback((produtoId, custoId) => {
+    setProdutos((prev) => prev.map((p) => (
+      p.id === produtoId ? { ...p, custosExtras: (p.custosExtras || []).filter((c) => c.id !== custoId) } : p
+    )));
+    excluirCustoExtra(custoId);
+  }, [setProdutos]);
+
+  const produtoAberto = produtos.find((p) => p.id === abertoId);
 
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-sm font-bold text-slate-700">Produtos ({produtos.length})</h3>
-          <p className="text-[11px] text-slate-400 mt-1">Comparando DAS de hoje x Simples Por Dentro x Simples Por Fora em</p>
-        </div>
+        <h3 className="text-sm font-bold text-slate-700">Produtos ({produtos.length})</h3>
         <div className="flex items-center gap-3">
-          <select value={ano} onChange={(e) => setAno(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-[#2F6F4E]">
-            {ANOS_REFORMA.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select>
           <button
             onClick={() => fileInputRef.current?.click()}
             className="flex items-center gap-2 text-sm font-semibold bg-[#2F6F4E] text-white px-4 py-2 rounded-lg hover:bg-[#265c40] transition"
@@ -596,6 +700,91 @@ function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdut
         </div>
       </div>
 
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {produtos.map((p) => (
+          <div
+            key={p.id}
+            onClick={() => setAbertoId(p.id)}
+            className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm hover:border-[#2F6F4E] hover:shadow-md transition cursor-pointer relative group"
+          >
+            <button
+              onClick={(e) => { e.stopPropagation(); removerProduto(p.id); }}
+              className="absolute top-3 right-3 text-xs text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"
+            >
+              remover
+            </button>
+            <p className="font-mono text-xs font-bold text-slate-700 pr-14">{p.sku}</p>
+            <div className="mt-3 flex items-baseline justify-between">
+              <span className="text-[11px] text-slate-400">Venda</span>
+              <span className="text-sm font-semibold text-slate-700">{fmtR(p.venda)}</span>
+            </div>
+            <div className="mt-1 flex items-baseline justify-between">
+              <span className="text-[11px] text-slate-400">Custo total</span>
+              <span className="text-sm font-semibold text-slate-700">{fmtR(custoTotal(p))}</span>
+            </div>
+            {p.custosExtras?.length > 0 && (
+              <span className="inline-block mt-3 text-[10px] font-sans bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full">
+                +{p.custosExtras.length} custo{p.custosExtras.length > 1 ? 's' : ''} extra{p.custosExtras.length > 1 ? 's' : ''}
+              </span>
+            )}
+          </div>
+        ))}
+        {produtos.length === 0 && (
+          <p className="col-span-full text-sm text-slate-400 italic text-center py-8">Nenhum produto carregado. Importe uma planilha ou adicione manualmente.</p>
+        )}
+      </div>
+
+      {produtoAberto && (
+        <ProdutoModal
+          produto={{ ...produtoAberto, custoBase: produtoAberto.custo }}
+          onClose={() => setAbertoId(null)}
+          onAtualizarCustoBase={handleAtualizarCustoBase}
+          onAdicionarCustoExtra={handleAdicionarCustoExtra}
+          onRemoverCustoExtra={removerCustoExtra}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Aba: Precificação (comparação Hoje x Por Dentro x Por Fora) ──────────
+function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos }) {
+  const rbt12 = parseBR(rbt12Raw);
+  const cbsPct = parseBR(cbsPctRaw);
+
+  const hoje = useMemo(() => (rbt12 > 0 ? calcDasHoje(rbt12) : null), [rbt12]);
+  const dentroInfo = useMemo(() => (rbt12 > 0 ? calcDasPorDentroRate(rbt12, ano) : null), [rbt12, ano]);
+  const foraInfo = useMemo(() => (rbt12 > 0 ? calcDasPorForaRate(rbt12, ano, cbsPct) : null), [rbt12, ano, cbsPct]);
+
+  const linhas = useMemo(() => {
+    if (!hoje || !dentroInfo || !foraInfo) return [];
+    return produtos.map((p) => {
+      const custo = custoTotal(p);
+      const dasHoje = p.venda * hoje.aliqEf;
+      const lucroHoje = p.venda - custo - dasHoje;
+      const margemHoje = p.venda > 0 ? lucroHoje / p.venda : 0;
+      return {
+        ...p,
+        custo,
+        margemHoje,
+        dentro: cenario(p.venda, custo, margemHoje, dentroInfo.aliqEf),
+        fora: cenario(p.venda, custo, margemHoje, foraInfo.totalRate),
+      };
+    });
+  }, [produtos, hoje, dentroInfo, foraInfo]);
+
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-bold text-slate-700">Produtos ({produtos.length})</h3>
+          <p className="text-[11px] text-slate-400 mt-1">Comparando DAS de hoje x Simples Por Dentro x Simples Por Fora em</p>
+        </div>
+        <select value={ano} onChange={(e) => setAno(e.target.value)} className="rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-[#2F6F4E]">
+          {ANOS_REFORMA.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </div>
+
       {!hoje && <p className="text-sm text-slate-400 italic">Informe o RBT12 na aba Simples Nacional para calcular a precificação.</p>}
 
       {hoje && (
@@ -608,7 +797,6 @@ function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdut
                 <th className="px-4 py-2 text-right bg-slate-50" colSpan={2}>Hoje</th>
                 <th className="px-4 py-2 text-right bg-emerald-50" colSpan={2}>Por Dentro ({ano})</th>
                 <th className="px-4 py-2 text-right bg-amber-50" colSpan={2}>Por Fora ({ano})</th>
-                <th className="px-4 py-2 bg-slate-50" rowSpan={2}></th>
               </tr>
               <tr className="text-left text-[11px] uppercase text-slate-500">
                 <th className="px-4 py-1 text-right bg-slate-50">Preço atual</th>
@@ -620,9 +808,14 @@ function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdut
               </tr>
             </thead>
             <tbody>
-              {linhas.map((l, i) => (
-                <tr key={l.sku + i} className="border-t border-slate-100">
-                  <td className="px-4 py-2 font-mono text-xs text-slate-600">{l.sku}</td>
+              {linhas.map((l) => (
+                <tr key={l.id} className="border-t border-slate-100">
+                  <td className="px-4 py-2 font-mono text-xs text-slate-600">
+                    {l.sku}
+                    {l.custosExtras?.length > 0 && (
+                      <span className="ml-1.5 text-[9px] font-sans bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded-full">+{l.custosExtras.length}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2 text-right">{fmtR(l.custo)}</td>
                   <td className="px-4 py-2 text-right">{fmtR(l.venda)}</td>
                   <td className={`px-4 py-2 text-right font-semibold ${l.margemHoje < 0 ? 'text-red-500' : 'text-slate-700'}`}>{fmtPct(l.margemHoje)}</td>
@@ -630,13 +823,10 @@ function PrecificacaoTab({ rbt12Raw, ano, setAno, cbsPctRaw, produtos, setProdut
                   <td className="px-4 py-2 text-right"><AumentoCell c={l.dentro} /></td>
                   <td className="px-4 py-2 text-right font-semibold text-amber-700">{l.fora.precoSugerido != null ? fmtR(l.fora.precoSugerido) : '—'}</td>
                   <td className="px-4 py-2 text-right"><AumentoCell c={l.fora} /></td>
-                  <td className="px-4 py-2 text-right">
-                    <button onClick={() => removerProduto(i)} className="text-xs text-slate-300 hover:text-red-500">remover</button>
-                  </td>
                 </tr>
               ))}
               {linhas.length === 0 && (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400 italic">Nenhum produto carregado. Importe uma planilha ou adicione manualmente.</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400 italic">Nenhum produto carregado — vá na aba Produtos.</td></tr>
               )}
             </tbody>
           </table>
@@ -666,16 +856,27 @@ export default function App() {
     setCbsPctRaw(String(REFORM_SCHEDULE[ano].cbs));
   }, [ano]);
 
+  // Carrega os produtos: Supabase primeiro (se configurado — VITE_SUPABASE_URL
+  // / VITE_SUPABASE_ANON_KEY no .env), senão o que estiver salvo no navegador;
+  // sem nada em nenhum dos dois (primeiríssima vez), semeia a partir da
+  // planilha-base — e já grava essa semente no banco, se configurado.
   useEffect(() => {
-    fetch(produtosBaseUrl)
-      .then((r) => r.arrayBuffer())
-      .then((buf) => setProdutos(parseProdutos(buf)))
-      .catch(() => {});
+    carregarOuSemear(() =>
+      fetch(produtosBaseUrl).then((r) => r.arrayBuffer()).then(parseProdutos)
+    ).then(setProdutos).catch(() => {});
   }, []);
+
+  // Cópia local sempre atualizada — cache/fallback caso o Supabase esteja
+  // fora do ar ou não configurado; as gravações "de verdade" acontecem por
+  // operação (criar/editar/excluir), não aqui.
+  useEffect(() => {
+    if (produtos.length) salvarSnapshotLocal(produtos);
+  }, [produtos]);
 
   const tabs = [
     { id: 'simples', label: 'Simples Nacional', icon: Calculator },
     { id: 'reforma', label: 'CBS e IBS', icon: TrendingUp },
+    { id: 'produtos', label: 'Produtos', icon: Package },
     { id: 'precificacao', label: 'Precificação', icon: FileSpreadsheet },
     { id: 'repasse', label: 'Repasse', icon: LineChart },
   ];
@@ -730,6 +931,9 @@ export default function App() {
             setCreditoIbsRaw={setCreditoIbsRaw}
           />
         )}
+        {tab === 'produtos' && (
+          <ProdutosTab produtos={produtos} setProdutos={setProdutos} />
+        )}
         {tab === 'precificacao' && (
           <PrecificacaoTab
             rbt12Raw={rbt12Raw}
@@ -737,7 +941,6 @@ export default function App() {
             setAno={setAno}
             cbsPctRaw={cbsPctRaw}
             produtos={produtos}
-            setProdutos={setProdutos}
           />
         )}
         {tab === 'repasse' && (

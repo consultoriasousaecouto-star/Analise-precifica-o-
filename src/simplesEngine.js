@@ -130,9 +130,12 @@ export const calcDasHoje = (rbt12) => {
 
 // "Por Dentro" (regime unificado): alíquota efetiva cheia da tabela do ano da
 // reforma — CBS e IBS continuam embutidos no DAS, junto com os demais tributos.
+// `detalhe`: quebra da alíquota efetiva por tributo (IRPJ, CSLL, CBS, CPP,
+// ICMS, IBS), na mesma ordem/nomes da tabela oficial do Simples Nacional.
 export const calcDasPorDentroRate = (rbt12, ano) => {
-  const { faixa, faixaIndex, aliqEf, anoTab } = resolveFaixa(rbt12, ano);
-  return { aliqEf, faixa, faixaIndex, anoTab };
+  const { tab, faixa, faixaIndex, aliqEf, anoTab } = resolveFaixa(rbt12, ano);
+  const detalhe = tab.tributos.map((nome, i) => ({ nome, rate: aliqEf * (faixa.rep[i] || 0) }));
+  return { aliqEf, detalhe, faixa, faixaIndex, anoTab };
 };
 
 // "Por Fora" (regime híbrido/regular de IBS-CBS): DAS residual (sem a fatia de
@@ -141,21 +144,24 @@ export const calcDasPorDentroRate = (rbt12, ano) => {
 // `cbsPctOverride`: alíquota de CBS em % (ex: 8.8) informada manualmente pelo
 // usuário na aba CBS e IBS — substitui a nominal de REFORM_SCHEDULE quando
 // preenchida, para simular alíquotas diferentes da LC 214/2025 vigente.
+// `detalhe`: quebra do DAS residual por tributo (IRPJ, CSLL, CPP, ICMS — tudo
+// que sobra no DAS depois que CBS e IBS saem por completo).
 export const calcDasPorForaRate = (rbt12, ano, cbsPctOverride) => {
   const { tab, faixa, faixaIndex, aliqEf, anoTab } = resolveFaixa(rbt12, ano);
   const ibsIdx = tab.tributos.indexOf('IBS');
   const cbsIdx = tab.tributos.indexOf('CBS');
-  const repResidual = tab.tributos.reduce((acc, _nome, i) => {
+  const detalhe = tab.tributos.reduce((acc, nome, i) => {
     if (i === ibsIdx || i === cbsIdx) return acc;
-    return acc + (faixa.rep[i] || 0);
-  }, 0);
-  const rateResidual = aliqEf * repResidual;
+    acc.push({ nome, rate: aliqEf * (faixa.rep[i] || 0) });
+    return acc;
+  }, []);
+  const rateResidual = detalhe.reduce((acc, d) => acc + d.rate, 0);
   const anos = Object.keys(REFORM_SCHEDULE).sort();
   const anoSched = REFORM_SCHEDULE[String(ano)] ? String(ano) : anos.filter((a) => a <= String(ano)).pop() || anos[0];
   const sched = REFORM_SCHEDULE[anoSched];
   const cbsRate = (Number.isFinite(cbsPctOverride) ? cbsPctOverride : sched.cbs) / 100;
   const ibsRate = sched.ibs / 100;
-  return { rateResidual, cbsRate, ibsRate, totalRate: rateResidual + cbsRate + ibsRate, faixa, faixaIndex, anoTab };
+  return { rateResidual, detalhe, cbsRate, ibsRate, totalRate: rateResidual + cbsRate + ibsRate, faixa, faixaIndex, anoTab };
 };
 
 export const fmtPct = (v, casas = 2) => `${(v * 100).toFixed(casas)}%`;
