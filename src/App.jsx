@@ -6,6 +6,7 @@ import {
   calcDasPorDentroRate,
   calcDasPorForaRate,
   REFORM_SCHEDULE,
+  CATEGORIAS_CREDITO,
   fmtPct,
   fmtR,
 } from './simplesEngine';
@@ -71,115 +72,6 @@ function parseProdutos(arrayBuffer) {
     out.push({ id: gerarId(), sku: String(r[skuCol]), venda, custo, custosExtras: [] });
   }
   return out;
-}
-
-// ─── Gráfico: margem com repasse x margem se o preço não mudar ─────────────
-// Duas séries com uma cor fixa cada (identidade, não ranking): "com repasse"
-// (verde/aqua — alvo preservado) e "sem repasse" (laranja — erosão se o preço
-// não acompanhar a alíquota real). Par validado (ΔE adjacente ≥8 CVD / ≥15
-// visão normal) na paleta de referência do skill de dataviz.
-const COR_COM_REPASSE = '#1baf7a';
-const COR_SEM_REPASSE = '#eb6834';
-
-function niceTicks(min, max, count = 4) {
-  const span = max - min || 0.01;
-  const step = span / count;
-  return Array.from({ length: count + 1 }, (_, i) => min + step * i);
-}
-
-function MargemChart({ pontos }) {
-  const svgRef = useRef(null);
-  const [hoverIdx, setHoverIdx] = useState(null);
-  const W = 760, H = 260, M = { top: 16, right: 16, bottom: 28, left: 46 };
-  const innerW = W - M.left - M.right, innerH = H - M.top - M.bottom;
-  const meses = pontos.length - 1;
-
-  const vals = pontos.flatMap((p) => [p.margemComRepasse, p.margemSemRepasse]);
-  const rawMin = Math.min(...vals), rawMax = Math.max(...vals);
-  const pad = Math.max((rawMax - rawMin) * 0.15, 0.01);
-  const yMin = rawMin - pad, yMax = rawMax + pad;
-
-  const x = (m) => M.left + (meses > 0 ? (m / meses) * innerW : 0);
-  const y = (v) => M.top + innerH - ((v - yMin) / (yMax - yMin)) * innerH;
-
-  const pathFor = (key) => pontos.map((p, i) => `${i === 0 ? 'M' : 'L'} ${x(p.mes)} ${y(p[key])}`).join(' ');
-  const areaGap = [
-    ...pontos.map((p) => `${p.mes === 0 ? 'M' : 'L'} ${x(p.mes)} ${y(p.margemComRepasse)}`),
-    ...[...pontos].reverse().map((p) => `L ${x(p.mes)} ${y(p.margemSemRepasse)}`),
-    'Z',
-  ].join(' ');
-
-  const ticks = niceTicks(yMin, yMax, 4);
-  const hovered = hoverIdx != null ? pontos[hoverIdx] : null;
-
-  const handleMove = (e) => {
-    const rect = svgRef.current.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * W;
-    const m = Math.round(((px - M.left) / innerW) * meses);
-    setHoverIdx(Math.min(meses, Math.max(0, m)));
-  };
-
-  return (
-    <div className="relative">
-      <svg
-        ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" data-chart="margem"
-        onMouseMove={handleMove} onMouseLeave={() => setHoverIdx(null)}
-      >
-        {ticks.map((t, i) => (
-          <g key={i}>
-            <line x1={M.left} x2={W - M.right} y1={y(t)} y2={y(t)} stroke="#e1e0d9" strokeWidth="1" />
-            <text x={M.left - 8} y={y(t)} textAnchor="end" dominantBaseline="middle" fontSize="10" fill="#898781">
-              {(t * 100).toFixed(0)}%
-            </text>
-          </g>
-        ))}
-        <line x1={M.left} x2={W - M.right} y1={M.top + innerH} y2={M.top + innerH} stroke="#c3c2b7" strokeWidth="1" />
-        {pontos.map((p) => (
-          <text key={p.mes} x={x(p.mes)} y={H - 6} textAnchor="middle" fontSize="10" fill="#898781">
-            {p.mes === 0 ? 'hoje' : `m${p.mes}`}
-          </text>
-        ))}
-
-        <path d={areaGap} fill={COR_SEM_REPASSE} opacity="0.10" />
-        <path d={pathFor('margemSemRepasse')} fill="none" stroke={COR_SEM_REPASSE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-        <path d={pathFor('margemComRepasse')} fill="none" stroke={COR_COM_REPASSE} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-
-        <circle cx={x(meses)} cy={y(pontos[meses].margemComRepasse)} r="4" fill={COR_COM_REPASSE} stroke="#fcfcfb" strokeWidth="2" />
-        <circle cx={x(meses)} cy={y(pontos[meses].margemSemRepasse)} r="4" fill={COR_SEM_REPASSE} stroke="#fcfcfb" strokeWidth="2" />
-        <text x={x(meses) - 6} y={y(pontos[meses].margemComRepasse) - 8} textAnchor="end" fontSize="11" fontWeight="700" fill="#0b0b0b">
-          {fmtPct(pontos[meses].margemComRepasse)}
-        </text>
-        <text x={x(meses) - 6} y={y(pontos[meses].margemSemRepasse) + 16} textAnchor="end" fontSize="11" fontWeight="700" fill="#0b0b0b">
-          {fmtPct(pontos[meses].margemSemRepasse)}
-        </text>
-
-        {hovered && (
-          <>
-            <line x1={x(hovered.mes)} x2={x(hovered.mes)} y1={M.top} y2={M.top + innerH} stroke="#c3c2b7" strokeWidth="1" />
-            <circle cx={x(hovered.mes)} cy={y(hovered.margemComRepasse)} r="4" fill={COR_COM_REPASSE} stroke="#fcfcfb" strokeWidth="2" />
-            <circle cx={x(hovered.mes)} cy={y(hovered.margemSemRepasse)} r="4" fill={COR_SEM_REPASSE} stroke="#fcfcfb" strokeWidth="2" />
-          </>
-        )}
-      </svg>
-
-      {hovered && (
-        <div
-          className="absolute top-2 bg-white border border-slate-200 rounded-lg shadow-md px-3 py-2 text-xs pointer-events-none"
-          style={{ left: `${Math.min(82, Math.max(2, (x(hovered.mes) / W) * 100))}%` }}
-        >
-          <p className="font-semibold text-slate-700 mb-1">{hovered.mes === 0 ? 'Hoje' : `Mês ${hovered.mes}`}</p>
-          <p className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-0.5 rounded" style={{ background: COR_COM_REPASSE }} />Com repasse: <b>{fmtPct(hovered.margemComRepasse)}</b></p>
-          <p className="flex items-center gap-1.5"><span className="inline-block w-2.5 h-0.5 rounded" style={{ background: COR_SEM_REPASSE }} />Sem repasse: <b>{fmtPct(hovered.margemSemRepasse)}</b></p>
-          <p className="text-slate-400 mt-1">alíquota {fmtPct(hovered.aliquotaMes, 2)}</p>
-        </div>
-      )}
-
-      <div className="flex items-center gap-5 mt-2 text-xs text-slate-600">
-        <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: COR_COM_REPASSE }} />Margem com repasse (alvo preservado)</span>
-        <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 rounded" style={{ background: COR_SEM_REPASSE }} />Margem se o preço não mudar</span>
-      </div>
-    </div>
-  );
 }
 
 // ─── Aba 4: Repasse (visual) ────────────────────────────────────────────────
@@ -256,9 +148,7 @@ function RepasseTab({ rbt12Raw, produtos, aliquotaUsadaRaw, setAliquotaUsadaRaw,
               <p className="text-sm text-slate-400 italic">Sem gap a repassar — a alíquota real já é igual ou menor que a usada nos preços.</p>
             ) : produtosValidos.length === 0 ? (
               <p className="text-sm text-slate-400 italic">Carregue produtos na aba Precificação para ver a margem projetada.</p>
-            ) : (
-              <MargemChart pontos={pontos} />
-            )}
+            ) : null}
           </div>
 
           {gap > 0 && produtosValidos.length > 0 && (
@@ -384,18 +274,39 @@ function SimplesNacionalTab({ rbt12Raw, setRbt12Raw, faturamentoMesRaw, setFatur
 // ─── Aba 2: CBS e IBS (Reforma, a partir de 2027) ──────────────────────────
 function CbsIbsTab({
   rbt12Raw, faturamentoMesRaw, ano, setAno, regime, setRegime, valorVendaRaw, setValorVendaRaw,
-  cbsPctRaw, setCbsPctRaw, creditoCbsRaw, setCreditoCbsRaw, creditoIbsRaw, setCreditoIbsRaw,
+  cbsPctRaw, setCbsPctRaw, creditosManuais, setCreditosManuais,
 }) {
   const rbt12 = parseBR(rbt12Raw);
   const fatMes = parseBR(faturamentoMesRaw);
   const valorVenda = parseBR(valorVendaRaw);
   const sched = REFORM_SCHEDULE[ano];
   const cbsPct = parseBR(cbsPctRaw);
-  const creditoCbs = parseBR(creditoCbsRaw);
-  const creditoIbs = parseBR(creditoIbsRaw);
 
   const dentro = useMemo(() => (rbt12 > 0 ? calcDasPorDentroRate(rbt12, ano) : null), [rbt12, ano]);
   const fora = useMemo(() => (rbt12 > 0 ? calcDasPorForaRate(rbt12, ano, cbsPct) : null), [rbt12, ano, cbsPct]);
+
+  const [formConta, setFormConta] = useState({ descricao: '', categoria: 'mercadorias', valor: '' });
+
+  const calcCreditoConta = useCallback((valor, categoriaId) => {
+    const fator = CATEGORIAS_CREDITO.find((c) => c.id === categoriaId)?.fator ?? 1;
+    const cbs = fora ? valor * fora.cbsRate * fator : 0;
+    const ibs = fora ? valor * fora.ibsRate * fator : 0;
+    return { cbs, ibs, total: cbs + ibs, fator };
+  }, [fora]);
+
+  const totaisCredito = useMemo(() => creditosManuais.reduce((acc, c) => {
+    const cr = calcCreditoConta(c.valor, c.categoria);
+    return { cbs: acc.cbs + cr.cbs, ibs: acc.ibs + cr.ibs, total: acc.total + cr.total };
+  }, { cbs: 0, ibs: 0, total: 0 }), [creditosManuais, calcCreditoConta]);
+
+  const handleAddConta = () => {
+    const valor = parseBR(formConta.valor);
+    if (!formConta.descricao.trim() || valor <= 0) return;
+    setCreditosManuais((prev) => [...prev, { id: gerarId(), descricao: formConta.descricao.trim(), categoria: formConta.categoria, valor }]);
+    setFormConta((f) => ({ ...f, descricao: '', valor: '' }));
+  };
+
+  const handleRemoverConta = (id) => setCreditosManuais((prev) => prev.filter((c) => c.id !== id));
 
   return (
     <div className="space-y-6">
@@ -491,24 +402,77 @@ function CbsIbsTab({
 
       {rbt12 > 0 && regime === 'fora' && fora && (
         <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
-          <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Créditos manuais (a apurar no mês)</h4>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <CurrencyInput label="Crédito de CBS no mês (R$)" value={creditoCbsRaw} onChange={setCreditoCbsRaw} placeholder="Ex: 500,00" />
-            <CurrencyInput label="Crédito de IBS no mês (R$)" value={creditoIbsRaw} onChange={setCreditoIbsRaw} placeholder="Ex: 20,00" />
-          </div>
-          <p className="text-[11px] text-slate-400 mt-2">
-            Créditos de CBS/IBS pagos nas compras (notas de fornecedores no regime regular), a abater do valor devido no mês.
+          <h4 className="text-xs font-bold text-slate-500 uppercase mb-1">Créditos manuais (a apurar no mês)</h4>
+          <p className="text-[11px] text-slate-400 mb-4">
+            Cadastre as contas que geram crédito de CBS/IBS (compras de mercadorias, aluguel, contador...).
+            Algumas categorias têm o aproveitamento limitado pela LC 214/2025 — o crédito já sai calculado com a redução aplicada.
           </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
+            <label className="block sm:col-span-2">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Descrição da conta</span>
+              <input
+                type="text" value={formConta.descricao} onChange={(e) => setFormConta((f) => ({ ...f, descricao: e.target.value }))}
+                placeholder="Ex: Aluguel da loja, Contador, Compra de mercadorias..."
+                onKeyDown={(e) => e.key === 'Enter' && handleAddConta()}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#2F6F4E] focus:ring-1 focus:ring-[#2F6F4E] outline-none"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Categoria</span>
+              <select
+                value={formConta.categoria} onChange={(e) => setFormConta((f) => ({ ...f, categoria: e.target.value }))}
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-[#2F6F4E]"
+              >
+                {CATEGORIAS_CREDITO.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+            </label>
+            <div className="flex gap-2 items-end">
+              <div className="flex-1">
+                <CurrencyInput label="Valor (R$)" value={formConta.valor} onChange={(v) => setFormConta((f) => ({ ...f, valor: v }))} placeholder="Ex: 3000,00" />
+              </div>
+              <button onClick={handleAddConta} className="h-[38px] text-sm font-semibold bg-[#2F6F4E] text-white px-4 rounded-lg hover:bg-[#265c40] transition">
+                Adicionar
+              </button>
+            </div>
+          </div>
+
+          {creditosManuais.length > 0 && (
+            <div className="mt-4 space-y-1.5">
+              {creditosManuais.map((c) => {
+                const cr = calcCreditoConta(c.valor, c.categoria);
+                const cat = CATEGORIAS_CREDITO.find((x) => x.id === c.categoria);
+                return (
+                  <div key={c.id} className="flex items-center justify-between gap-3 bg-slate-50 rounded-lg border border-slate-200 px-3 py-2 text-sm">
+                    <div className="min-w-0">
+                      <p className="text-slate-700 font-semibold truncate">{c.descricao}</p>
+                      <p className="text-[11px] text-slate-400">
+                        {cat?.label} · base {fmtR(c.valor)}
+                        {cr.fator < 1 && <span className="text-amber-600 font-semibold"> · crédito {fmtPct(cr.fator, 0)}</span>}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      <span className="text-xs text-slate-500">CBS {fmtR(cr.cbs)}</span>
+                      <span className="text-xs text-slate-500">IBS {fmtR(cr.ibs)}</span>
+                      <span className="font-semibold text-emerald-700">{fmtR(cr.total)}</span>
+                      <button onClick={() => handleRemoverConta(c.id)} className="text-xs text-slate-300 hover:text-red-500">remover</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4 border-t border-slate-100 pt-4">
             <div>
               <p className="text-xs text-slate-500">CBS a pagar no mês (líquido)</p>
-              <p className="text-xl font-black text-slate-800">{fmtR(Math.max(0, fatMes * fora.cbsRate - creditoCbs))}</p>
-              <p className="text-[11px] text-slate-400">bruto {fmtR(fatMes * fora.cbsRate)} − crédito {fmtR(creditoCbs)}</p>
+              <p className="text-xl font-black text-slate-800">{fmtR(Math.max(0, fatMes * fora.cbsRate - totaisCredito.cbs))}</p>
+              <p className="text-[11px] text-slate-400">bruto {fmtR(fatMes * fora.cbsRate)} − crédito {fmtR(totaisCredito.cbs)}</p>
             </div>
             <div>
               <p className="text-xs text-slate-500">IBS a pagar no mês (líquido)</p>
-              <p className="text-xl font-black text-slate-800">{fmtR(Math.max(0, fatMes * fora.ibsRate - creditoIbs))}</p>
-              <p className="text-[11px] text-slate-400">bruto {fmtR(fatMes * fora.ibsRate)} − crédito {fmtR(creditoIbs)}</p>
+              <p className="text-xl font-black text-slate-800">{fmtR(Math.max(0, fatMes * fora.ibsRate - totaisCredito.ibs))}</p>
+              <p className="text-[11px] text-slate-400">bruto {fmtR(fatMes * fora.ibsRate)} − crédito {fmtR(totaisCredito.ibs)}</p>
             </div>
           </div>
         </div>
@@ -844,8 +808,7 @@ export default function App() {
   const [regime, setRegime] = useState('fora');
   const [valorVendaRaw, setValorVendaRaw] = useState('100,00');
   const [cbsPctRaw, setCbsPctRaw] = useState(String(REFORM_SCHEDULE['2027'].cbs));
-  const [creditoCbsRaw, setCreditoCbsRaw] = useState('');
-  const [creditoIbsRaw, setCreditoIbsRaw] = useState('');
+  const [creditosManuais, setCreditosManuais] = useState([]);
   const [aliquotaUsadaRaw, setAliquotaUsadaRaw] = useState('');
   const [mesesRaw, setMesesRaw] = useState('5');
   const [produtos, setProdutos] = useState([]);
@@ -925,10 +888,8 @@ export default function App() {
             setValorVendaRaw={setValorVendaRaw}
             cbsPctRaw={cbsPctRaw}
             setCbsPctRaw={setCbsPctRaw}
-            creditoCbsRaw={creditoCbsRaw}
-            setCreditoCbsRaw={setCreditoCbsRaw}
-            creditoIbsRaw={creditoIbsRaw}
-            setCreditoIbsRaw={setCreditoIbsRaw}
+            creditosManuais={creditosManuais}
+            setCreditosManuais={setCreditosManuais}
           />
         )}
         {tab === 'produtos' && (

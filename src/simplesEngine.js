@@ -164,6 +164,30 @@ export const calcDasPorForaRate = (rbt12, ano, cbsPctOverride) => {
   return { rateResidual, detalhe, cbsRate, ibsRate, totalRate: rateResidual + cbsRate + ibsRate, faixa, faixaIndex, anoTab };
 };
 
+// Categorias de crédito manual (CBS/IBS pago nas compras) e o fator de
+// aproveitamento de cada uma — mesmas regras da LC 214/2025 já validadas no
+// CBS SIMPLES: a maioria das despesas do regime regular gera crédito
+// integral, mas a lei limita o aproveitamento de locação, plano de saúde,
+// educação e profissional liberal (uso misto/não plenamente vinculado à
+// atividade), e zera o crédito presumido de compras feitas de pessoa física.
+export const CATEGORIAS_CREDITO = [
+  { id: 'mercadorias', label: 'Mercadorias p/ revenda', fator: 1 },
+  { id: 'insumos', label: 'Insumos / matérias-primas', fator: 1 },
+  { id: 'frete_pj', label: 'Frete / transportadora PJ', fator: 1 },
+  { id: 'energia', label: 'Energia elétrica', fator: 1 },
+  { id: 'telecom', label: 'Telecom / internet', fator: 1 },
+  { id: 'servicos_gerais', label: 'Serviços gerais (limpeza, TI...)', fator: 1 },
+  { id: 'ativo_imobilizado', label: 'Ativo imobilizado', fator: 1 },
+  { id: 'software', label: 'Software / licenças / cloud', fator: 1 },
+  { id: 'vale_refeicao', label: 'Vale-refeição / alimentação (CCT)', fator: 1 },
+  { id: 'servicos_liberal', label: 'Profissional liberal (70%)', fator: 0.70 },
+  { id: 'plano_saude', label: 'Plano de saúde empresarial (40%)', fator: 0.40 },
+  { id: 'educacao_func', label: 'Cursos / treinamentos (40%)', fator: 0.40 },
+  { id: 'alugueis', label: 'Locação de imóvel comercial (30%)', fator: 0.30 },
+  { id: 'frete_autonomo', label: 'Frete autônomo PF (presumido)', fator: 0 },
+  { id: 'compra_usados_pf', label: 'Compra de bens usados de PF (presumido)', fator: 0 },
+];
+
 export const fmtPct = (v, casas = 2) => `${(v * 100).toFixed(casas)}%`;
 export const fmtR = (v) =>
   (v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
